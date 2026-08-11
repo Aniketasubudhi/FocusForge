@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { auth, db, googleSignIn, googleSignOut, watchAuth, loadState, saveState } from "./firebase";
 import {
   LayoutDashboard, ListTodo, Timer, BookOpen, BarChart3, History as HistoryIcon,
   Settings as SettingsIcon, Play, Pause, X, Plus, Search, Check, ChevronRight,
@@ -311,44 +312,75 @@ function seed() {
 
 const KEY = "focusforge:state:v1";
 
-function useStore() {
+function useAuth() {
+  const [user, setUser] = useState(undefined); // undefined = checking, null = signed out
+  useEffect(() => watchAuth(setUser), []);
+  return user;
+}
+
+function useStore(uid) {
   const [state, setState] = useState(null);
   const [ready, setReady] = useState(false);
+  const uidRef = useRef(uid);
+  uidRef.current = uid;
 
   useEffect(() => {
+    if (!uid) return;
     let live = true;
+    setReady(false);
     (async () => {
       let loaded = null;
-      try {
-        const r = await window.storage.get(KEY);
-        if (r && r.value) loaded = JSON.parse(r.value);
-      } catch (e) { /* first run or storage unavailable */ }
+      try { loaded = await loadState(uid); }
+      catch (e) { console.error("Could not load your data", e); }
       if (!live) return;
-      setState(loaded && loaded.tasks ? loaded : seed());
+      const empty = { v: 1, settings: { ...DEFAULT_SETTINGS }, tasks: [], sessions: [], courses: [], notes: {}, later: [], priorities: {}, completedPriorities: {} };
+      setState(loaded && loaded.tasks ? loaded : empty);
       setReady(true);
     })();
     return () => { live = false; };
-  }, []);
-
-  const save = useCallback((next) => {
-    setState(next);
-    (async () => {
-      try { await window.storage.set(KEY, JSON.stringify(next)); }
-      catch (e) { console.error("Could not save your data", e); }
-    })();
-  }, []);
+  }, [uid]);
 
   const update = useCallback((fn) => setState((s) => {
     const next = fn(s);
-    (async () => {
-      try { await window.storage.set(KEY, JSON.stringify(next)); }
-      catch (e) { console.error("Could not save your data", e); }
-    })();
+    if (uidRef.current) saveState(uidRef.current, next).catch((e) => console.error("Could not save your data", e));
     return next;
   }), []);
 
-  return { state, ready, update, save };
+  return { state, ready, update };
 }
+
+function SignInScreen() {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  return (
+    <div className="ff" style={{ "--bg": THEMES.dark.bg, "--surface": THEMES.dark.surface, "--surface2": THEMES.dark.surface2, "--line": THEMES.dark.line, "--text": THEMES.dark.text, "--muted": THEMES.dark.muted, "--faint": THEMES.dark.faint, "--acc": THEMES.dark.acc, minHeight: "100vh", display: "grid", placeItems: "center", padding: 20 }}>
+      <style>{CSS}</style>
+      <div className="card" style={{ padding: 32, maxWidth: 360, width: "100%", textAlign: "center" }}>
+        <div style={{ width: 40, height: 40, borderRadius: 11, background: "var(--acc)", display: "grid", placeItems: "center", margin: "0 auto 16px" }}>
+          <Target size={22} color="#fff" />
+        </div>
+        <div style={{ fontSize: 19, fontWeight: 650 }}>FocusForge</div>
+        <p style={{ fontSize: 13.5, color: "var(--muted)", marginTop: 8, lineHeight: 1.6 }}>
+          Decide what you want to do before opening the internet.
+        </p>
+        <button className="btn btn-primary" style={{ width: "100%", marginTop: 22, padding: 12 }} disabled={busy}
+          onClick={async () => {
+            setBusy(true); setErr(null);
+            try { await googleSignIn(); } catch (e) { setErr("Sign-in didn't go through. Try again."); }
+            setBusy(false);
+          }}>
+          {busy ? "Signing in…" : "Sign in with Google"}
+        </button>
+        {err && <div style={{ fontSize: 12.5, color: "var(--danger)", marginTop: 10 }}>{err}</div>}
+        <div style={{ fontSize: 11.5, color: "var(--faint)", marginTop: 16 }}>
+          Your tasks, sessions, and notes sync to your account across every device you sign in on.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 
 /* -------------------------------------------------------------- selectors */
 
@@ -447,8 +479,8 @@ const Empty = ({ title, hint, action }) => (
 
 /* ------------------------------------------------------------------- app */
 
-export default function FocusForge() {
-  const { state, ready, update } = useStore();
+function FocusForgeApp({ user }) {
+  const { state, ready, update } = useStore(user.uid);
   const [view, setView] = useState("dashboard");
   const [active, setActive] = useState(null);       // live session
   const [now, setNow] = useState(Date.now());
@@ -604,7 +636,7 @@ export default function FocusForge() {
 
   const shared = {
     state, update, C, today, score, streak, st, setView, setRitual, setEditing,
-    toggleTask, deleteTask, setPriorities, addLater, setSettings, setToast, setQuick,
+    toggleTask, deleteTask, setPriorities, addLater, setSettings, setToast, setQuick, user,
   };
 
   return (
@@ -1691,7 +1723,7 @@ function HistoryView({ state }) {
 
 /* -------------------------------------------------------------- settings */
 
-function SettingsView({ state, setSettings, update, setToast }) {
+function SettingsView({ state, setSettings, update, setToast, user }) {
   const s = state.settings;
   const num = (key, label, min, max) => (
     <Field label={label}>
@@ -1726,6 +1758,21 @@ function SettingsView({ state, setSettings, update, setToast }) {
       <div>
         <div className="eyebrow">Settings</div>
         <h1 style={{ fontSize: 23, fontWeight: 650, margin: "7px 0 0" }}>Tune it to how you actually work</h1>
+      </div>
+
+      <div className="card" style={{ padding: 18, display: "flex", alignItems: "center", gap: 12, justifyContent: "space-between", flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
+          {user?.photoURL
+            ? <img src={user.photoURL} alt="" width={36} height={36} style={{ borderRadius: "50%" }} />
+            : <div style={{ width: 36, height: 36, borderRadius: "50%", background: "var(--surface2)", display: "grid", placeItems: "center", fontSize: 14, fontWeight: 600 }}>
+                {(user?.displayName || user?.email || "?")[0].toUpperCase()}
+              </div>}
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 550 }}>{user?.displayName || "Signed in"}</div>
+            <div style={{ fontSize: 12, color: "var(--muted)" }}>{user?.email}</div>
+          </div>
+        </div>
+        <button className="btn btn-sm btn-ghost" onClick={() => googleSignOut()}>Sign out</button>
       </div>
 
       <div className="card" style={{ padding: 18 }}>
@@ -1789,4 +1836,26 @@ function SettingsView({ state, setSettings, update, setToast }) {
       </div>
     </div>
   );
+}
+
+/* --------------------------------------------------------------- auth gate */
+
+export default function FocusForge() {
+  const user = useAuth();
+
+  if (user === undefined) {
+    return (
+      <div className="ff" style={{
+        "--bg": THEMES.dark.bg, "--text": THEMES.dark.text, "--faint": THEMES.dark.faint,
+        minHeight: "100vh", display: "grid", placeItems: "center",
+      }}>
+        <style>{CSS}</style>
+        <div className="eyebrow">Loading FocusForge</div>
+      </div>
+    );
+  }
+
+  if (!user) return <SignInScreen />;
+
+  return <FocusForgeApp user={user} />;
 }

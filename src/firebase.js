@@ -1,5 +1,7 @@
 import { initializeApp } from "firebase/app";
-import { getAuth, signInAnonymously, onAuthStateChanged } from "firebase/auth";
+import {
+  getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged,
+} from "firebase/auth";
 import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 
 const firebaseConfig = {
@@ -14,15 +16,20 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 export const db = getFirestore(app);
+const provider = new GoogleAuthProvider();
 
-export function ensureSignedIn() {
-  return new Promise((resolve, reject) => {
-    const unsub = onAuthStateChanged(auth, (user) => {
-      unsub();
-      if (user) return resolve(user);
-      signInAnonymously(auth).then((cred) => resolve(cred.user)).catch(reject);
-    });
-  });
+// Subscribes to auth state. Calls back with the user object, or null when
+// signed out. Returns the unsubscribe function.
+export function watchAuth(cb) {
+  return onAuthStateChanged(auth, (user) => cb(user || null));
+}
+
+export function googleSignIn() {
+  return signInWithPopup(auth, provider);
+}
+
+export function googleSignOut() {
+  return signOut(auth);
 }
 
 export async function loadState(uid) {
